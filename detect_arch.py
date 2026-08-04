@@ -283,9 +283,15 @@ def main():
         ipa_files = args.files
     else:
         ipa_files = glob.glob("*.ipa")
+        if not ipa_files:
+            # Fallback to script directory in case of double-click
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if script_dir and os.path.abspath(os.getcwd()) != script_dir:
+                os.chdir(script_dir)
+                ipa_files = glob.glob("*.ipa")
         
     if not ipa_files:
-        print("No .ipa files found in the current directory.")
+        print("No .ipa files found in the current directory or script directory.")
         return
         
     ipa_files.sort(key=natural_sort_key)
@@ -338,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    input("\nPress Enter to exit...")
