@@ -4,6 +4,7 @@ import zipfile
 import plistlib
 import struct
 import re
+import argparse
 
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
@@ -206,6 +207,8 @@ def process_ipa(ipa_path):
                     nfat_arch = struct.unpack(f"{endian}I", nfat_bytes)[0]
                     
                     archs = []
+                    first_offset = 0xFFFFFFFF
+                    
                     for i in range(nfat_arch):
                         if is_fat64:
                             arch_data = ef.read(32)
@@ -215,16 +218,43 @@ def process_ipa(ipa_path):
                             arch_data = ef.read(20)
                             current_pos += 20
                             cputype, cpusubtype, offset, size, align = struct.unpack(f"{endian}iiIII", arch_data)
-                        archs.append((offset, size, i))
                         
+                        if offset < first_offset:
+                            first_offset = offset
+                            
+                        archs.append((offset, size, i, False))
+                        
+                    entry_size = 32 if is_fat64 else 20
+                    hidden_index = nfat_arch
+                    while current_pos + entry_size <= first_offset:
+                        arch_data = ef.read(entry_size)
+                        if len(arch_data) < entry_size:
+                            break
+                        
+                        if is_fat64:
+                            cputype, cpusubtype, offset, size, align, reserved = struct.unpack(f"{endian}iiQQII", arch_data)
+                        else:
+                            cputype, cpusubtype, offset, size, align = struct.unpack(f"{endian}iiIII", arch_data)
+                            
+                        if cputype == 16777228:
+                            archs.append((offset, size, hidden_index, True))
+                            hidden_index += 1
+                            current_pos += entry_size
+                        else:
+                            current_pos += entry_size
+                            break
+                            
                     archs_sorted = sorted(archs, key=lambda x: x[0])
                     
-                    results = [None] * nfat_arch
-                    for offset, size, index in archs_sorted:
+                    results = [None] * len(archs)
+                    for offset, size, index, is_hidden in archs_sorted:
                         arch_info, current_pos = parse_macho(ef, offset, current_pos)
                         if "error" in arch_info:
                             result["error"] = arch_info["error"]
                             return result
+                        
+                        arch_info["is_hidden"] = is_hidden
+                            
                         results[index] = arch_info
                         
                     result["architectures"] = results
@@ -245,7 +275,15 @@ def process_ipa(ipa_path):
     return result
 
 def main():
-    ipa_files = glob.glob("*.ipa")
+    parser = argparse.ArgumentParser(description="Scan IPA files for architectures and encryption status.")
+    parser.add_argument("files", nargs="*", help="Specific .ipa files to scan. If none provided, scans all .ipa files in the current directory.")
+    args = parser.parse_args()
+    
+    if args.files:
+        ipa_files = args.files
+    else:
+        ipa_files = glob.glob("*.ipa")
+        
     if not ipa_files:
         print("No .ipa files found in the current directory.")
         return
@@ -288,7 +326,10 @@ def main():
             
         for arch in res['architectures']:
             enc_status = "Encrypted" if arch['encrypted'] else "Decrypted"
-            lines.append(f"  {arch['arch']:<10} : {enc_status}")
+            if arch.get('is_hidden'):
+                lines.append(f"  {arch['arch']:<11} : {enc_status} [hidden slice]")
+            else:
+                lines.append(f"  {arch['arch']:<11} : {enc_status}")
             
     with open("ipa_report.txt", "w", encoding="utf-8") as out:
         out.write("\n".join(lines) + "\n")
